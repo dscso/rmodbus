@@ -55,6 +55,7 @@ use crate::{calc_crc16, calc_lrc, ErrorKind, ModbusProto, VectorTrait};
 /// }
 /// # } }
 /// ```
+#[cfg(feature = "tcpudp")]
 macro_rules! tcp_response_set_data_len {
     ($self: expr, $len:expr) => {
         if $self.proto == ModbusProto::TcpUdp {
@@ -115,13 +116,21 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
     pub fn finalize_response(&mut self) -> Result<(), ErrorKind> {
         if let Some(err) = self.error {
             match self.proto {
+                #[cfg(feature = "tcpudp")]
                 ModbusProto::TcpUdp => {
                     self.response
                         // write 2b length 1b unit ID, 1b function code and 1b error
                         // 2b transaction ID and 2b protocol ID were already written by .parse()
                         .extend(&[0, 3, self.unit_id, self.responding_to_fn + 0x80, err.byte()])?;
                 }
-                ModbusProto::Rtu | ModbusProto::Ascii => {
+                #[cfg(feature = "ascii")]
+                ModbusProto::Ascii => {
+                    self.response
+                        // write 1b unit ID, 1b function code and 1b error
+                        .extend(&[self.unit_id, self.responding_to_fn + 0x80, err.byte()])?;
+                }
+                #[cfg(feature = "rtu")]
+                ModbusProto::Rtu => {
                     self.response
                         // write 1b unit ID, 1b function code and 1b error
                         .extend(&[self.unit_id, self.responding_to_fn + 0x80, err.byte()])?;
@@ -129,6 +138,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
             }
         }
         match self.proto {
+            #[cfg(feature = "rtu")]
             ModbusProto::Rtu => {
                 let len = self.response.len();
                 if len > u8::MAX as usize {
@@ -138,6 +148,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 let crc = calc_crc16(self.response.as_slice(), len as u8);
                 self.response.extend(&crc.to_le_bytes())
             }
+            #[cfg(feature = "ascii")]
             ModbusProto::Ascii => {
                 let len = self.response.len();
                 if len > u8::MAX as usize {
@@ -147,6 +158,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 let lrc = calc_lrc(self.response.as_slice(), len as u8);
                 self.response.push(lrc)
             }
+            #[cfg(feature = "tcpudp")]
             ModbusProto::TcpUdp => Ok(()),
         }
     }
@@ -177,6 +189,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                     self.error = Some(ModbusErrorCode::IllegalDataAddress);
                     return Ok(());
                 }
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, 6);
                 // 6b unit, func, reg, val
                 self.response
@@ -196,6 +209,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                     self.error = Some(ModbusErrorCode::IllegalDataAddress);
                     return Ok(());
                 }
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, 6);
                 // 6b unit, func, reg, val
                 self.response
@@ -222,6 +236,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 };
 
                 if result.is_ok() {
+                    #[cfg(feature = "tcpudp")]
                     tcp_response_set_data_len!(self, 6);
                     // 6b unit, f, reg, cnt
                     self.response
@@ -333,7 +348,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                         // write single coil / register
                         // funcs 15 & 16
                         // write multiple coils / registers
-
+                        #[cfg(feature = "tcpudp")]
                         tcp_response_set_data_len!(self, 6);
                         // 6b unit, func, reg, val
                         self.response
@@ -354,7 +369,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
     }
 
     /// Process read functions
-    #[allow(clippy::manual_is_multiple_of)]
+    #[allow(clippy::manual_is_finite)]
     pub fn process_read<C: context::ModbusContext>(&mut self, ctx: &C) -> Result<(), ErrorKind> {
         match self.func {
             ModbusFunction::GetCoils | ModbusFunction::GetDiscretes => {
@@ -364,6 +379,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 if self.count % 8 != 0 {
                     data_len += 1;
                 }
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, data_len + 3);
                 // 2b unit and func
                 self.response
@@ -398,6 +414,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 // funcs 3 - 4
                 // read holdings / inputs
                 let data_len = self.count << 1;
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, data_len + 3);
                 // 2b unit and func
                 self.response
@@ -443,7 +460,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
     /// [`ModbusContext`](context::ModbusContext)) don't forget to call
     /// [`process_external_read`](ModbusFrame::process_external_read), these two calls together
     /// replace the call to [`process_read`](ModbusFrame::process_read).
-    #[allow(clippy::manual_is_multiple_of)]
+    #[allow(clippy::manual_is_finite)]
     pub fn get_external_read(&mut self) -> Result<Read<'_>, ErrorKind> {
         match self.func {
             ModbusFunction::GetCoils | ModbusFunction::GetDiscretes => {
@@ -453,6 +470,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 if self.count % 8 != 0 {
                     data_len += 1;
                 }
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, data_len + 3);
                 // 2b unit and func
                 self.response
@@ -479,6 +497,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                 // funcs 3 - 4
                 // read holdings / inputs
                 let data_len = self.count << 1;
+                #[cfg(feature = "tcpudp")]
                 tcp_response_set_data_len!(self, data_len + 3);
                 // 2b unit and func
                 self.response
@@ -535,6 +554,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
     /// Parse frame buffer
     #[allow(clippy::too_many_lines)]
     pub fn parse(&mut self) -> Result<(), ErrorKind> {
+        #[cfg(feature = "tcpudp")]
         if self.proto == ModbusProto::TcpUdp {
             if self.buf.len() < 6 {
                 return Err(ErrorKind::FrameBroken);
@@ -555,6 +575,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
         if !broadcast && unit != self.unit_id {
             return Ok(());
         }
+        #[cfg(feature = "tcpudp")]
         if !broadcast && self.proto == ModbusProto::TcpUdp {
             // copy 4 bytes: tr id and proto
             self.response.extend(&self.buf[0..4])?;
@@ -579,7 +600,9 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
         macro_rules! check_frame_crc {
             ($len:expr) => {
                 match self.proto {
+                    #[cfg(feature = "tcpudp")]
                     ModbusProto::TcpUdp => true,
+                    #[cfg(feature = "rtu")]
                     ModbusProto::Rtu => {
                         if self.buf.len() < self.frame_start + $len as usize + 2 {
                             return Err(ErrorKind::FrameBroken);
@@ -590,6 +613,7 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
                                 self.buf[self.frame_start + $len as usize + 1],
                             ])
                     }
+                    #[cfg(feature = "ascii")]
                     ModbusProto::Ascii => {
                         if self.buf.len() < self.frame_start + $len as usize + 1 {
                             return Err(ErrorKind::FrameBroken);
@@ -747,10 +771,10 @@ impl<'a, V: VectorTrait<u8>> ModbusFrame<'a, V> {
     pub fn set_modbus_error_if_unset(&mut self, err: &ErrorKind) -> Result<(), ErrorKind> {
         if self.error.is_none() && err.is_modbus_error() {
             // leave 0 bytes for RTU/ASCII, leave 4 bytes for TCP/UDP (Transaction ID and Protocol ID)
-            let len_leave_before_finalize = if self.proto == ModbusProto::TcpUdp {
-                4
-            } else {
-                0
+            let len_leave_before_finalize = match self.proto {
+                #[cfg(feature = "tcpudp")]
+                ModbusProto::TcpUdp => 4,
+                _ => 0,
             };
 
             self.response.resize(len_leave_before_finalize, 0)?;
